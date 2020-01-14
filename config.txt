@@ -2,6 +2,7 @@
 
 size=4.5GB
 path=iso
+outPath=iso_out
 delBigFile=false1
 delIso=false
 zipDelRaw=false

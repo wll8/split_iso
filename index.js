@@ -18,6 +18,7 @@ const userArgv = { // 合并文件参数和命令行参数
 const appArgv = { // 默认值处理
   size: userArgv.size || '4.5GB',
   path: (userArgv.path || 'iso').replace(/\\/g, '/'),
+  outPath: (userArgv.outPath || 'iso_out').replace(/\\/g, '/'),
   delBigFile: userArgv.delBigFile || false,
   delIso: userArgv.delIso || false,
   zipDelRaw: userArgv.zipDelRaw || false,
@@ -42,6 +43,7 @@ console.log('应用参数:', appArgv)
 参数:
 size=4.5GB -- 分割为多少大小, 默认 4.5GB
 path=iso -- 要处理的目录, 默认为当前所在位置的 iso 目录
+outPath=iso_out -- 处理结果输出目录, 默认为当前所在位置的 iso_out 目录
 delBigFile=<false|true> -- 分割完成后是否删除 iso 中的大文件
 delIso=<false|true> -- 分割完成后是否删除 iso 文件, 已挂载状态不能删除
 zipDelRaw=<false|true> -- 压缩或解压完成后是否删除源文件, 默认 false
@@ -98,6 +100,10 @@ function print(...arg) {
   return console.log(...arg)
 }
 
+function hasFile(filePath) {
+  return fs.existsSync(filePath)
+}
+
 async function split(dir) {
   const handleDir = `${dir}/**/*.*`.replace(/\/\//g, '/')
 
@@ -106,6 +112,12 @@ async function split(dir) {
   for (let index = 0; index < paths.length; index++) {
     const isoFile = paths[index]
     const outPath = qsPath(isoFile.replace(/\.iso$/i, ''))
+      .replace(qsPath(dir), qsPath(config.outPath)) // 替换为输出目录
+    const outPathDir = path.dirname(outPath)
+    if(hasFile(outPathDir) === false) { // 如果目标目录不存在则创建
+      const cmdCreateDir = `md "${outPathDir}"`
+      runCmd(cmdCreateDir, {exit: false, des: `创建目录 ${outPathDir}`})
+    }
     if(taskState[outPath] === 'ok') {
       console.log(`跳过, 已完成的 iso ${outPath}`)
       continue
@@ -170,8 +182,14 @@ function zip(dir) { // 先跳转到文件目录再使用文件名进行压缩, �
       continue
     }
     const fileDir = qsPath(path.dirname(file))
+    const outPath = fileDir
+      .replace(qsPath(dir), qsPath(config.outPath)) // 替换为输出目录
+    if(hasFile(outPath) === false) { // 如果目标目录不存在则创建
+      const cmdCreateDir = `md "${outPath}"`
+      runCmd(cmdCreateDir, {exit: false, des: `创建目录 ${outPath}`})
+    }
     const fileName = path.basename(file)
-    const cmdZip = `cd /d "${fileDir}" && "${config.rar}" a "${fileName}.zip" "${fileName}" ${config.zipDelRaw === true ? '-df' : ''} -ibck -m0 -hp${config.zipPw}`
+    const cmdZip = `cd /d "${fileDir}" && "${config.rar}" a "${outPath}\\${fileName}.zip" "${fileName}" ${config.zipDelRaw === true ? '-df' : ''} -ibck -m0 -hp${config.zipPw}`
     runCmd(cmdZip, {des: `压缩 "${fileName}"`})
   }
 }
@@ -181,8 +199,14 @@ function unZip(dir) {
   for (let index = 0; index < allFile.length; index++) {
     const file = allFile[index]
     const fileDir = qsPath(path.dirname(file))
+    const outPath = fileDir
+      .replace(qsPath(dir), qsPath(config.outPath)) // 替换为输出目录
+    if(hasFile(outPath) === false) { // 如果目标目录不存在则创建
+      const cmdCreateDir = `md "${outPath}"`
+      runCmd(cmdCreateDir, {exit: false, des: `创建目录 ${outPath}`})
+    }
     const fileName = path.basename(file)
-    const cmdUnZip = `cd /d "${fileDir}" && "${config.rar}" x "${fileName}" -ibck -hp${config.zipPw} -y`
+    const cmdUnZip = `cd /d "${fileDir}" && "${config.rar}" x "${fileName}" "${outPath}" -ibck -hp${config.zipPw} -y`
     const {status} = runCmd(cmdUnZip, {des: `解压 "${fileName}"`})
     if(status === 0 && config.zipDelRaw === true) {
       const cmdDelZip = `cd /d "${fileDir}" && del /s /q "${fileName}"`
