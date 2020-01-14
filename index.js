@@ -2,28 +2,38 @@ const globby = require('globby')
 const child_process = require('child_process')
 const fs = require('fs')
 const path = require('path')
-const matchAll = require('string.prototype.matchall')
-const userArgv = parseArgv()
-const argv = {
-  ...userArgv,
+require('string.prototype.matchall').shim()
+const cliArgv = parseArgv() // 命令行上的参数
+const fileArgv = {...( // 配置文件中的参数
+  cliArgv.config === true
+  ? getConfigInfo(qsPath(`config.txt`)).res
+  : cliArgv.config === undefined
+    ? undefined
+    : getConfigInfo(qsPath(cliArgv.config)).res
+)}
+const userArgv = { // 合并文件参数和命令行参数
+  ...fileArgv,
+  ...cliArgv,
+}
+const appArgv = { // 默认值处理
   size: userArgv.size || '4.5GB',
-  path: userArgv.path || 'iso',
+  path: (userArgv.path || 'iso').replace(/\\/g, '/'),
   delBigFile: userArgv.delBigFile || false,
   delIso: userArgv.delIso || false,
   zipDelRaw: userArgv.zipDelRaw || false,
   zipPw: userArgv.zipPw || 'ziptzipt',
   ignoreErr: userArgv.ignoreErr || false,
   exe: (userArgv.exe || 'split').split(','),
-  errLogFile: qsPath(`errLog.txt`),
-  taskStateFile: qsPath(`taskState.json`),
-  tsMuxeR: qsPath(`tsMuxeR_2.6.12/tsMuxeR.exe`),
-  rar: qsPath(`WinRAR.exe`),
+  errLogFile: qsPath(userArgv.errLogFile || `errLog.txt`),
+  taskStateFile: qsPath(userArgv.taskStateFile || `taskState.json`),
+  tsMuxeR: qsPath(userArgv.tsMuxeR || `tsMuxeR_2.6.12/tsMuxeR.exe`),
+  rar: qsPath(userArgv.rar || `WinRAR.exe`),
 }
 
-console.log('userArgv', argv)
+console.log('应用参数:', appArgv)
 
 { // 关联参数特殊处理
-  if((argv.help === true) || (process.argv[2] === undefined)) {
+  if((appArgv.help === true) || (process.argv[2] === undefined)) {
     const cliName = 'zipt'
     print(
 `
@@ -38,17 +48,18 @@ zipDelRaw=<false|true> -- 压缩或解压完成后是否删除源文件, 默认 
 zipPw=ziptzipt -- 压缩或解压密码, 默认 ziptzipt
 ignoreErr=<false|true> -- 是否忽略错误继续执行, 默认 false
 exe=<split|zip|unZip> -- 要使用的功能, 默认仅 split, 多个使用逗号分割
+config=config.txt -- 使用配置文件指定参数, 命令行参数优先于文件
 help -- 显示使用方法
 
 示例:
-${cliName} -- 
+${cliName} --
 `)
     return
   }
 
 }
 const config = {
-  ...argv,
+  ...appArgv,
 }
 const taskState = JSON.parse(fs.readFileSync(config.taskStateFile).toString() || `{}`)
 new Promise(async () => {
@@ -56,10 +67,20 @@ new Promise(async () => {
   config.exe.forEach(item => fnList[item](config.path))
 })
 
-function parseArgv() {
-  return process.argv.slice(2).reduce((acc, arg) => {
+function parseArgv(arr) {
+  return (arr || process.argv.slice(2)).reduce((acc, arg) => {
     let [k, v] = arg.split('=')
-    acc[k] = v === undefined ? true : /true|false/.test(v) ? v === 'true' : /[\d|\.]+/.test(v) ? Number(v) : v
+    acc[k] = v === undefined // 没有值时, 则表示为 true
+      ? true
+      : (
+        /^(true|false)$/.test(v) // 转换指明的 true/false
+        ? v === 'true'
+        : (
+          /[\d|\.]+/.test(v)
+          ? (isNaN(Number(v)) ? v : Number(v)) // 如果转换为数字失败, 则使用原始字符
+          : v
+        )
+      )
     return acc
   }, {})
 }
@@ -79,7 +100,7 @@ function print(...arg) {
 
 async function split(dir) {
   const handleDir = `${dir}/**/*.*`.replace(/\/\//g, '/')
-  
+
   const paths = globby.sync(handleDir).filter(item => item.match(/\.iso$/i))
   console.log({paths})
   for (let index = 0; index < paths.length; index++) {
@@ -173,16 +194,57 @@ function unZip(dir) {
 function getMetaInfo({file, size}) { // 获取文件信息并生成 meta 文件
   const cmd = `"${config.tsMuxeR}" "${file}"`
   let raw = child_process.execSync(cmd).toString().trim()
-  const infoArr = raw.replace(/(Track ID:)/gm, '\n_\n$1')
+  /**
+  raw 示例:
+    Network Optix tsMuxeR.  Version 2.6.12. www.networkoptix.com
+    Track ID:    224
+    Stream type: MPEG-2
+    Stream ID:   V_MPEG-2
+    Stream info: Profile: Main@8. Resolution: 720:480i. Frame rate: 29.97
+    Stream lang:
+
+    Track ID:    32
+    Can't detect stream type
+
+    Track ID:    128
+    Stream type: AC3
+    Stream ID:   A_AC3
+    Stream info: Bitrate: 192Kbps Sample Rate: 48KHz Channels: 2
+    Stream lang:
+    Stream delay: -372
+  `
+  infoArr 示例:
+    [
+      {
+        "Track ID": "224",
+        "Stream type": "MPEG-2",
+        "Stream ID": "V_MPEG-2",
+        "Stream info": "Profile: Main@8. Resolution: 720:480i. Frame rate: 29.97",
+        "Stream lang": ""
+      },
+      {
+        "Track ID": "32"
+      },
+      {
+        "Track ID": "128",
+        "Stream type": "AC3",
+        "Stream ID": "A_AC3",
+        "Stream info": "Bitrate: 192Kbps Sample Rate: 48KHz Channels: 2",
+        "Stream lang": "",
+        "Stream delay": "-372"
+      }
+    ]
+   */
+  const infoArr = raw.replace(/(Track ID:)/gm, '\n_\n$1') // 把文件信息根据 Track ID 转换为对象
     .split('\n_\n')
     .filter(item => item.match(/^Track ID:/))
     .map(item => (
-      [...matchAll(item, /^(.*?):(.*)/gm)]
+      [...item.matchAll(/^(.*?):(.*)/gm)]
         .reduce(
           (res, item) => (
             {
               ...res,
-              ...{[item[1]]: item[2].trim()},
+              [item[1]]: item[2].trim(),
             }
           ),
           {}
@@ -191,8 +253,8 @@ function getMetaInfo({file, size}) { // 获取文件信息并生成 meta 文件
   const out = `MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr  --split-size=${size} --vbv-len=500\r\n`
     + infoArr.map(item => (
       item[`Stream ID`]
-        ? `${item[`Stream ID`]}, "${file}",${item[`Stream delay`] ? ` timeshift=${item[`Stream delay`]}ms,` : ''} track=${item[`Track ID`]}`
-        : ''
+      ? `${item[`Stream ID`]}, "${file}",${item[`Stream delay`] ? ` timeshift=${item[`Stream delay`]}ms,` : ''} track=${item[`Track ID`]}`
+      : ''
     )).join(`\r\n`)
   const metaFile = require('os').tmpdir() + require('crypto').createHash('md5').update(out).digest('hex') + '.txt'
   fs.writeFileSync(metaFile, out)
@@ -207,6 +269,51 @@ function getMetaInfo({file, size}) { // 获取文件信息并生成 meta 文件
   console.log(res.infoArr)
   return res
 }
+
+function getConfigInfo(file) { // 获取配置文件中的对象
+  /**
+   * 配置文件示例:
+      ;分号开头的行是注释
+      size=4.5GB
+      path=iso
+      delBigFile=false
+      delIso=false
+      zipDelRaw=false
+      zipPw=ziptzipt
+      ignoreErr=false
+      exe=split
+   * 返回:
+      {
+        size: '4.5GB',
+        path: 'iso',
+        delBigFile: 'false',
+        delIso: 'false',
+        zipDelRaw: 'false',
+        zipPw: 'ziptzipt',
+        ignoreErr: 'false',
+        exe: 'split'
+      }
+   */
+  const str = fs.readFileSync(file, 'utf8')
+  const arr = []
+  const rawObj = str.split('\n').filter(item => item.trim() && !(item.trim()).match(/^;/))
+    .reduce(
+      (res, item) => {
+        item = item.trim()
+        let [, key, val] = item.match(/^(.*?)=(.*)/)
+        val = val.trim() // 去除 val 的左右空白
+        arr.push(`${key}=${val}`)
+        return {
+          ...res,
+          [key]: val,
+        }
+      },
+      {}
+    )
+  const res = parseArgv(arr)
+  return {rawObj, res}
+}
+
 function runCmd(cmd, cfg = {}) {
   const {exit = true, des = '运行命令'} = cfg
   console.info(`${des}\r\n${cmd}`)

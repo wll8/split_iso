@@ -1,0 +1,10 @@
+;分号开头的行是注释
+
+size=4.5GB
+path=iso
+delBigFile=false1
+delIso=false
+zipDelRaw=false
+zipPw=ziptzipt
+ignoreErr=false
+exe=split
