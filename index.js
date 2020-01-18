@@ -31,6 +31,7 @@ const appArgv = { // 默认值处理
   taskStateFile: qsPath(userArgv.taskStateFile || `taskState.json`),
   tsMuxeR: qsPath(userArgv.tsMuxeR || `tsMuxeR_2.6.12/tsMuxeR.exe`),
   rar: qsPath(userArgv.rar || `WinRAR.exe`),
+  pfm: qsPath(userArgv.pfm || `pfm.exe`),
 }
 
 console.log('应用参数:', appArgv)
@@ -128,8 +129,38 @@ async function split(dir) {
     }
     const cmdClearUniso = `rd /s /q "${outPath}" 2>nul`
     runCmd(cmdClearUniso, {exit: false, des: `清理目录 ${outPath}`})
-    const cmdUniso = `"${config.rar}" x "${qsPath(isoFile)}" "${outPath}\\" -ibck -y` // 解压 iso
-    runCmd(cmdUniso, {des: `解压 iso 文件 "${isoFile}"`})
+    function mountIso(isoFile, ) { // 挂载 iso 并创建目录结构
+      let mountPath
+      try {
+        const cmdMountIso = `"${config.pfm}" mount -i "${qsPath(isoFile)}"`
+        runCmd(cmdMountIso, {des: `挂载 iso 文件 "${isoFile}"`})
+        const {status, text} = runCmd(`"${config.pfm}" list`, {des: `获取挂载目录 "${isoFile}"`, method: 'execSync'})
+        const re = new RegExp(`${qsPath(isoFile).replace(/\\/g, '\\\\')}\\s+(.*)`, 'i')
+        mountPath = text.match(re)[1]
+
+        const cmdCopyDir = `xcopy /y /t /e "${mountPath}" "${outPath}\\"`
+        runCmd(cmdCopyDir, {des: `复制目录结构 "${isoFile}"`})
+        
+        const isoFiles = globby.sync(`${mountPath.replace(/\\/g, '/')}/**/*.*`) // 在 iso 目录中查找可以分割的大文件
+        // console.log('处理列表: \r\n', isoFiles)
+        isoFiles.forEach(isoFileItem => {
+          const cmdLinkFile = `mklink "${qsPath(isoFileItem).replace(qsPath(mountPath), qsPath(outPath))}" "${qsPath(isoFileItem)}"`
+          runCmd(cmdLinkFile, {des: `创建 iso 中的文件关联 "${isoFile}"`})
+        })
+      } catch (error) {
+        console.error('挂载出错', error)
+        runCmd(`"${config.pfm}" unmount "${qsPath(isoFile)}"`, {des: `卸载 iso 文件 "${isoFile}"`})
+        return undefined
+      }
+    }
+    const cmdTestDisk = `chkntfs ${outPath.match(/(.*:)/)[1]}`
+    if(runCmd(cmdTestDisk, {exit: false, des: `检查磁盘格式是否支持链接 ${outPath}`}).status === 0) {
+      mountIso(isoFile)
+    } else {
+      const cmdUniso = `"${config.rar}" x "${qsPath(isoFile)}" "${outPath}\\" -ibck -y`
+      runCmd(cmdUniso, {des: `解压 iso 文件 "${isoFile}"`})
+    }
+    
     const findBigFilePaths = globby.sync(`${outPath.replace(/\\/g, '/')}/**/*.*`) // 在 iso 目录中查找可以分割的大文件
       .filter(item => (
         !item.match(/\.split\./)
@@ -351,8 +382,23 @@ function getConfigInfo(file) { // 获取配置文件中的对象
 }
 
 function runCmd(cmd, cfg = {}) {
-  const {exit = true, des = '运行命令'} = cfg
+  const {exit = true, des = '运行命令', method = 'spawnSync', showOut = true} = cfg
   console.info(`${des}\r\n${cmd}`)
+  if(method === 'execSync') {
+    try {
+      let text = child_process.execSync(cmd).toString().trim()
+      showOut && console.log(text)
+      return {
+        text,
+        status: 0,
+      }
+    } catch (error) {
+      return {
+        status: error.status,
+        stderr: error.stderr.toString(),
+      }
+    }
+  }
   const res = config.testCmd === false ? child_process.spawnSync(cmd, {stdio: 'inherit', shell: true, maxBuffer: 9e9}) : {status: 0}
   const { status } = res
   console.log({status})
