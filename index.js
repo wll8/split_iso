@@ -24,6 +24,8 @@ const appArgv = { // 默认值处理
   zipDelRaw: userArgv.zipDelRaw || false,
   zipPw: userArgv.zipPw || 'ziptzipt',
   ignoreErr: userArgv.ignoreErr || false,
+  coverExt: userArgv.coverExt || 'dat',
+  testCmd: userArgv.testCmd || false,
   exe: (userArgv.exe || 'split').split(','),
   errLogFile: qsPath(userArgv.errLogFile || `errLog.txt`),
   taskStateFile: qsPath(userArgv.taskStateFile || `taskState.json`),
@@ -50,6 +52,8 @@ zipDelRaw=<false|true> -- 压缩或解压完成后是否删除源文件, 默认 
 zipPw=ziptzipt -- 压缩或解压密码, 默认 ziptzipt
 ignoreErr=<false|true> -- 是否忽略错误继续执行, 默认 false
 exe=<split|zip|unZip> -- 要使用的功能, 默认仅 split, 多个使用逗号分割
+coverExt=<dat|exe|false> -- 使用某个文件类型覆盖, 默认 dat. false 不使用, exe 可以自动还原但可能会收到安全提示
+testCmd=<false|true> -- 仅显示命令而不运行
 config=config.txt -- 使用配置文件指定参数, 命令行参数优先于文件
 help -- 显示使用方法
 
@@ -189,8 +193,16 @@ function zip(dir) { // 先跳转到文件目录再使用文件名进行压缩, �
       runCmd(cmdCreateDir, {exit: false, des: `创建目录 ${outPath}`})
     }
     const fileName = path.basename(file)
-    const cmdZip = `cd /d "${fileDir}" && "${config.rar}" a "${outPath}\\${fileName}.zip" "${fileName}" ${config.zipDelRaw === true ? '-df' : ''} -ibck -m0 -hp${config.zipPw}`
-    runCmd(cmdZip, {des: `压缩 "${fileName}"`})
+    const zipPath = `${outPath}\\${fileName}.zip`
+    const cmdZip = `cd /d "${fileDir}" && "${config.rar}" a "${zipPath}" "${fileName}" ${config.zipDelRaw === true ? '-df' : ''} -ibck -m0 -hp${config.zipPw}`
+    if(runCmd(cmdZip, {des: `压缩 "${fileName}"`}).status === 0 && config.coverExt !== false) { // 压缩后进行文件类型覆盖
+      const cmdCover = `copy /y /b "${qsPath('coverExt.' + config.coverExt)}" + "${zipPath}" "${zipPath}.${config.coverExt}"`
+      if(runCmd(cmdCover, {des: `覆盖文件类型 ${fileName}`}).status === 0) {
+        const cmdDelZip = `del /s /q "${zipPath}"`
+        runCmd(cmdDelZip, {des: `清理文件 ${fileName}`})
+      }
+    }
+
   }
 }
 
@@ -341,7 +353,7 @@ function getConfigInfo(file) { // 获取配置文件中的对象
 function runCmd(cmd, cfg = {}) {
   const {exit = true, des = '运行命令'} = cfg
   console.info(`${des}\r\n${cmd}`)
-  const res = child_process.spawnSync(cmd, {stdio: 'inherit', shell: true, maxBuffer: 9e9})
+  const res = config.testCmd === false ? child_process.spawnSync(cmd, {stdio: 'inherit', shell: true, maxBuffer: 9e9}) : {status: 0}
   const { status } = res
   console.log({status})
   if(status !== 0 && exit) {
