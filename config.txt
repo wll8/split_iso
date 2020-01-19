@@ -8,4 +8,5 @@ delIso=false
 zipDelRaw=false
 zipPw=ziptzipt
 ignoreErr=false
+testCmd=false
 exe=split

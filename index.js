@@ -30,7 +30,8 @@ const appArgv = { // 默认值处理
   errLogFile: qsPath(userArgv.errLogFile || `errLog.txt`),
   taskStateFile: qsPath(userArgv.taskStateFile || `taskState.json`),
   tsMuxeR: qsPath(userArgv.tsMuxeR || `tsMuxeR_2.6.12/tsMuxeR.exe`),
-  rar: qsPath(userArgv.rar || `WinRAR.exe`),
+  rar: qsPath(userArgv.rar || `WinRARx64.exe`),
+  pfmi: qsPath(userArgv.pfmi || `pfm_install.exe`),
 }
 
 console.log('应用参数:', appArgv)
@@ -69,9 +70,38 @@ const config = {
 }
 const taskState = JSON.parse(fs.readFileSync(config.taskStateFile).toString() || `{}`)
 new Promise(async () => {
-  const fnList = {split, zip, unZip}
+  init()
+  const fnList = {split, zip, unZip, cover}
   config.exe.forEach(item => fnList[item](config.path))
 })
+
+function cover(dir) {
+  const allFile = globby.sync(`${dir}/**/**`)
+  for (let index = 0; index < allFile.length; index++) {
+    const file = qsPath(allFile[index])
+    if(hasFile(`${file}.${config.coverExt}`)) {
+      console.log(`跳过, 已存处理的文件 ${file}`)
+      continue
+    }
+    const fileDir = qsPath(path.dirname(file))
+    const outPath = fileDir
+      .replace(qsPath(dir), qsPath(config.outPath)) // 替换为输出目录
+    if(hasFile(outPath) === false) { // 如果目标目录不存在则创建
+      const cmdCreateDir = `md "${outPath}"`
+      runCmd(cmdCreateDir, {exit: false, des: `创建目录 ${outPath}`})
+    }
+    const fileName = path.basename(file)
+    const coverName = `${outPath}\\${fileName}.${config.coverExt}`
+    const cmdCover = `copy /y /b "${qsPath('coverExt.' + config.coverExt)}" + "${file}" "${coverName}"`
+    if(runCmd(cmdCover, {des: `覆盖文件类型 ${fileName}`}).status === 0) {
+      const cmdDelZip = `del /s /q "${file}"`
+      runCmd(cmdDelZip, {des: `清理文件 ${fileName}`})
+    }
+
+  }
+  
+  
+}
 
 function parseArgv(arr) {
   return (arr || process.argv.slice(2)).reduce((acc, arg) => {
@@ -128,45 +158,85 @@ async function split(dir) {
     }
     const cmdClearUniso = `rd /s /q "${outPath}" 2>nul`
     runCmd(cmdClearUniso, {exit: false, des: `清理目录 ${outPath}`})
-    const cmdUniso = `"${config.rar}" x "${qsPath(isoFile)}" "${outPath}\\" -ibck -y` // 解压 iso
-    runCmd(cmdUniso, {des: `解压 iso 文件 "${isoFile}"`})
-    const findBigFilePaths = globby.sync(`${outPath.replace(/\\/g, '/')}/**/*.*`) // 在 iso 目录中查找可以分割的大文件
-      .filter(item => (
-        !item.match(/\.split\./)
-        && item.match(/\.(evo|vob|mpg|mkv|mka|mp4|mov|ts|m2ts)$/i)
-        && parseFloat(fs.statSync(item).size) > size2b(config.size)
-      ))
-    console.log('处理列表: \r\n', findBigFilePaths)
-    for (let index = 0; index < findBigFilePaths.length; index++) {
-      const item = findBigFilePaths[index];
-      const file = item.replace(/\//g, '\\')
-      if(taskState[file] === 'ok') {
-        console.log(`跳过, 已分割的文件 "${file}"`)
-        continue
-      }
-      const cmdSplit = `"${config.tsMuxeR}" "${getMetaInfo({file, size: config.size}).metaFile}" "${file}.m2ts"`
-      const {status} = runCmd(cmdSplit, {des: `分割 iso 中的大文件 "${file}"`})
-      if(status === 0) {
-        taskState[file] = 'ok' // 保留状态运行状态
-        fs.writeFileSync(config.taskStateFile, JSON.stringify(taskState, null, 2))
-      }
-      if(status === 0 && config.delBigFile === true) { // 上一条命令运行成功才进行删除操作
-        const cmdDel = `del /s /q "${file}"`
-        runCmd(cmdDel, {des: `删除分割完成后的大文件 "${file}"`})
-      }
+    function mountIso(isoFile) { // 挂载 iso 并创建目录结构
+      let mountPath
+      try {
+        const cmdMountIso = `pfm mount -a -r -w -i "${qsPath(isoFile)}"`
+        runCmd(cmdMountIso, {des: `挂载 iso 文件 "${isoFile}"`})
+        const {status, text} = runCmd(`pfm list`, {des: `获取挂载目录 "${isoFile}"`, method: 'execSync'})
+        const re = new RegExp(`${qsPath(isoFile).replace(/\\/g, '\\\\')}\\s+(.*)`)
+        const now = `/${Date.now()}/`
+        mountPath = text.replace(qsPath(isoFile), now).match(new RegExp(`${now}\\s+(.*)`))[1]
+        console.log('mountPathmountPath', mountPath)
 
-      if((index + 1) === findBigFilePaths.length && findBigFilePaths.reduce((res, item) => {
-        return taskState[item.replace(/\//g, '\\')] === 'ok' ? res + 1 : res
-      }, 0)) { // 保留状态运行状态
-        taskState[outPath] = 'ok'
-        fs.writeFileSync(config.taskStateFile, JSON.stringify(taskState, null, 2))
-        if(config.delIso === true) {
-          const cmdDelIso = `del /s /q "${qsPath(isoFile)}"`
-          runCmd(cmdDelIso, {des: `删除已分割后的 iso 文件 "${isoFile}"`})
-        }
+        const cmdCopyDir = `xcopy /y /t /e "${mountPath}" "${outPath}\\"`
+        runCmd(cmdCopyDir, {des: `复制目录结构 "${isoFile}"`})
+        
+        const isoFiles = globby.sync(`${mountPath.replace(/\\/g, '/')}/**/**`) // 在 iso 目录中查找可以分割的大文件
+        // console.log('处理列表: \r\n', isoFiles)
+        isoFiles.forEach(isoFileItem => {
+          const cmdLinkFile = `mklink "${qsPath(isoFileItem).replace(qsPath(mountPath), qsPath(outPath))}" "${qsPath(isoFileItem)}"`
+          runCmd(cmdLinkFile, {des: `创建 iso 中的文件关联 "${isoFile}"`})
+        })
+      } catch (error) {
+        console.error('挂载出错', error)
+        runCmd(`pfm unmount "${qsPath(isoFile)}"`, {des: `卸载 iso 文件 "${isoFile}"`})
+        process.exit()
+        return undefined
       }
-
     }
+    const disk = outPath.match(/(.*:)/)[1]
+    const cmdTestDisk = `chkntfs ${disk}`
+    if(runCmd(cmdTestDisk, {exit: false, des: `检查磁盘格式是否支持链接 ${disk}`}).status === 0) {
+      mountIso(isoFile)
+    } else {
+      const cmdUniso = `"${config.rar}" x "${qsPath(isoFile)}" "${outPath}\\" -ibck -y`
+      runCmd(cmdUniso, {des: `解压 iso 文件 "${isoFile}"`})
+    }
+
+    // const findBigFilePaths = globby.sync(`${outPath.replace(/\\/g, '/')}/**/*.*`) // 在 iso 目录中查找可以分割的大文件
+    //   .filter(item => (
+    //     !item.match(/\.split\./)
+    //     && item.match(/\.(evo|vob|mpg|mkv|mka|mp4|mov|ts|m2ts)$/i)
+    //     && parseFloat(fs.statSync(item).size) > size2b(config.size)
+    //   ))
+    // console.log('处理列表: \r\n', findBigFilePaths)
+    // for (let index = 0; index < findBigFilePaths.length; index++) {
+    //   const item = findBigFilePaths[index];
+    //   const file = item.replace(/\//g, '\\')
+    //   if(taskState[file] === 'ok') {
+    //     console.log(`跳过, 已分割的文件 "${file}"`)
+    //     continue
+    //   }
+    //   const cmdSplit = `"${config.tsMuxeR}" "${getMetaInfo({file, size: config.size}).metaFile}" "${file}.m2ts"`
+    //   const {status} = runCmd(cmdSplit, {des: `分割 iso 中的大文件 "${file}"`})
+    //   if(status === 0) {
+    //     taskState[file] = 'ok' // 保留状态运行状态
+    //     fs.writeFileSync(config.taskStateFile, JSON.stringify(taskState, null, 2))
+    //   }
+    //   if(status === 0 && config.delBigFile === true) { // 上一条命令运行成功才进行删除操作
+    //     const cmdDel = `del /s /q "${file}"`
+    //     runCmd(cmdDel, {des: `删除分割完成后的大文件 "${file}"`})
+    //   }
+
+    //   if((index + 1) === findBigFilePaths.length && findBigFilePaths.reduce((res, item) => {
+    //     return taskState[item.replace(/\//g, '\\')] === 'ok' ? res + 1 : res
+    //   }, 0)) { // 保留状态运行状态
+    //     taskState[outPath] = 'ok'
+    //     fs.writeFileSync(config.taskStateFile, JSON.stringify(taskState, null, 2))
+    //     if(config.delIso === true) {
+    //       const cmdDelIso = `del /s /q "${qsPath(isoFile)}"`
+    //       runCmd(cmdDelIso, {des: `删除已分割后的 iso 文件 "${isoFile}"`})
+    //     }
+    //   }
+
+    // }
+  }
+}
+
+function init() {
+  if(runCmd(`pfm -h 2>nul||echo nopfm`, {method: 'execSync'}).text.includes('nopfm')) {
+    runCmd(`${config.pfmi} /install`, {des: `安装 pfm`}) // 需要使用管理员身份运行, 因为需要注册驱动
   }
 }
 
@@ -178,7 +248,7 @@ function qsPath(addr = '', relativePath = `${__dirname}`) {
 
 
 function zip(dir) { // 先跳转到文件目录再使用文件名进行压缩, 这样可以避免压缩多于的路径
-  const allFile = globby.sync(`${dir}/**/*.*`)
+  const allFile = globby.sync(`${dir}/**/*.jpg`)
   for (let index = 0; index < allFile.length; index++) {
     const file = qsPath(allFile[index])
     if(hasFile(`${file}.zip`)) {
@@ -351,8 +421,23 @@ function getConfigInfo(file) { // 获取配置文件中的对象
 }
 
 function runCmd(cmd, cfg = {}) {
-  const {exit = true, des = '运行命令'} = cfg
+  const {exit = true, des = '运行命令', method = 'spawnSync', showOut = true} = cfg
   console.info(`${des}\r\n${cmd}`)
+  if(method === 'execSync') {
+    try {
+      let text = child_process.execSync(cmd).toString().trim()
+      showOut && console.log(text)
+      return {
+        text,
+        status: 0,
+      }
+    } catch (error) {
+      return {
+        status: error.status,
+        stderr: error.stderr.toString(),
+      }
+    }
+  }
   const res = config.testCmd === false ? child_process.spawnSync(cmd, {stdio: 'inherit', shell: true, maxBuffer: 9e9}) : {status: 0}
   const { status } = res
   console.log({status})
